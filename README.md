@@ -65,23 +65,41 @@ A Pi tab opens, registers itself with AMQ, polls its inbox occasionally, and exp
 
 ## Install
 
-> ⚠️ Pre-release. The skeleton is in this repo; the working bits are not yet wired up.
-
 ```bash
 # 1. Install AMQ (the underlying queue)
 brew install avivsinai/tap/amq      # macOS
 # or:
 curl -fsSL https://raw.githubusercontent.com/avivsinai/agent-message-queue/main/scripts/install.sh | bash
 
-# 2. Install pi-bridge as a Pi package
+# 2. Install pi-bridge as a Pi package (once published)
 pi install github:amertkara/pi-bridge
+
+# Or, for local development:
+git clone git@github.com:amertkara/pi-bridge.git
+cd pi-bridge && npm install
+# Then point Pi at the extension via your config:
+#   pi --extension /path/to/pi-bridge/extension/pi-bridge.ts
 
 # 3. Initialize the AMQ root in your project (or globally via ~/.amqrc)
 amq coop init
 
-# 4. Open Pi tabs as usual; pi-bridge registers each session automatically
+# 4. Set your handle for this terminal (or let pi-bridge derive one from cwd)
+export AM_ME=pi-$(basename "$PWD")
+amq presence set --me "$AM_ME" --status idle
+
+# 5. Open Pi as usual; pi-bridge wires up its tools and a footer status
 pi
 ```
+
+### Configuration
+
+| Env var | Default | Effect |
+|---|---|---|
+| `AM_ME` | derived from `cwd` (`pi-<basename>`) | Handle this Pi session uses for sending and receiving |
+| `PI_BRIDGE_HANDLE` | — | Overrides `AM_ME` for pi-bridge specifically |
+| `AM_ROOT` | resolved by `amq` (`.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect) | AMQ queue root |
+
+Handles must match `[a-z0-9_-]+` (AMQ requirement). pi-bridge sanitizes derived handles automatically.
 
 ## Example workflow
 
@@ -138,14 +156,29 @@ pi-bridge/
     └── two-tab-review.md        # End-to-end walkthrough
 ```
 
+## Tools
+
+The extension registers these tools:
+
+| Tool | What it does |
+|---|---|
+| `bridge_send` | Send a structured message to another agent session |
+| `bridge_inbox` | List unread messages for this session |
+| `bridge_read` | Read a message by id (moves it from `new` to `cur`) |
+| `bridge_reply` | Reply to a message preserving thread continuity |
+| `bridge_sessions` | List active agent sessions known to AMQ |
+| `bridge_thread` | Show all messages in a thread |
+
+The skill at [`skills/pi-bridge/SKILL.md`](./skills/pi-bridge/SKILL.md) teaches Pi *when* to use these tools and *how* to compose distilled handoffs.
+
 ## Roadmap
 
-### v0.1 — Single-machine Pi-to-Pi
-- [ ] Extension scaffold; registers tools, hooks `session_start` / `session_shutdown`
-- [ ] Wraps `amq send`, `amq list`, `amq read`, `amq reply` as Pi tools
-- [ ] Skill markdown teaches the review-handoff pattern
-- [ ] Terminal notifications via `amq wake`
-- [ ] Human approval gate before any outbound message
+### v0.1 — Single-machine Pi-to-Pi (current)
+- [x] Extension wraps `amq send`, `amq list`, `amq read`, `amq reply`, `amq presence list`, `amq thread` as Pi tools
+- [x] Session lifecycle hooks (`session_start`, `session_shutdown`) with footer status
+- [x] Skill markdown teaches the review-handoff pattern with explicit user-approval gate
+- [x] Graceful degradation when `amq` is not installed
+- [ ] End-to-end verified between two Pi tabs in the same checkout
 
 ### v0.2 — Cross-tool
 - [ ] Verify Pi ↔ Claude Code handoff (via `amc`) works end-to-end
@@ -153,9 +186,9 @@ pi-bridge/
 - [ ] Document the cross-tool patterns in `workflows.md`
 
 ### v0.3 — Quality of life
-- [ ] Footer status widget showing inbox count
+- [ ] Background poller using `amq watch` for terminal notifications via `amq wake`
+- [ ] Footer widget showing inbox count
 - [ ] Custom message renderer for inbound bridge messages
-- [ ] More message kinds (decision, question, blocker, ack)
 - [ ] Optional auto-fetch on session start (off by default)
 
 ### v0.4 — Workflows

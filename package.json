@@ -1,6 +1,6 @@
 {
   "name": "pi-bridge",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Pi extension that bridges agent sessions via AMQ (Agent Message Queue)",
   "type": "module",
   "license": "MIT",
@@ -23,6 +23,12 @@
     "claude-code",
     "codex"
   ],
+  "files": [
+    "extension/**",
+    "skills/**",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
     "extensions": [
       "./extension/pi-bridge.ts"
@@ -30,5 +36,20 @@
     "skills": [
       "./skills/pi-bridge"
     ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
   }
 }
