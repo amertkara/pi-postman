@@ -12,153 +12,28 @@ Pi sessions are isolated by design. That's mostly the right call — context dri
 
 ## How it works
 
-`pi-bridge` is a thin Pi extension on top of [Agent Message Queue (AMQ)](https://github.com/avivsinai/agent-message-queue), a battle-tested file-based message queue for local agent-to-agent communication. AMQ does the hard parts (atomic delivery, threading, priorities, terminal notifications, federation across repos). `pi-bridge` is the Pi-shaped surface on top: extension hooks, tools, and a skill that teaches Pi when and how to use them.
-
-Architecture:
+`pi-bridge` is a thin Pi extension on top of [Agent Message Queue (AMQ)](https://github.com/avivsinai/agent-message-queue), a file-based message queue for local agent-to-agent communication. AMQ does the hard parts (atomic delivery, threading, priorities, terminal notifications). `pi-bridge` is the Pi surface on top: extension hooks, tools, and a skill that teaches Pi when and how to use them.
 
 ```
-┌─────────────┐                      ┌─────────────┐
-│  Pi tab A   │                      │  Pi tab B   │
-│ (review)    │                      │ (author)    │
-└──────┬──────┘                      └──────┬──────┘
-       │                                    │
-       │  pi-bridge extension               │  pi-bridge extension
-       │  (registers tools, hooks lifecycle)│
-       │                                    │
-       └────────┐                  ┌────────┘
-                ▼                  ▼
-         ┌──────────────────────────────┐
-         │   AMQ (single Go binary)     │
-         │   ~/.agent-mail/             │
-         │   ├─ inbox/{tmp,new,cur}/    │  ← maildir, atomic delivery
-         │   ├─ sessions/               │
-         │   └─ extensions/pi-bridge/   │  ← our session registry
-         └──────────────────────────────┘
-                ▲                  ▲
-                │                  │
-       ┌────────┘                  └────────┐
-       │                                    │
-┌──────┴──────┐                      ┌──────┴──────┐
-│ Claude Code │                      │   Codex     │
-│ (via amc)   │                      │ (via amx)   │
-└─────────────┘                      └─────────────┘
-```
-
-A Pi tab opens, registers itself with AMQ, polls its inbox occasionally, and exposes a few tools (`bridge_send`, `bridge_inbox`, `bridge_read`, `bridge_reply`). When a tab sends a message, it's atomically delivered to the recipient's mailbox. The recipient's `pi-bridge` notices on the next poll, surfaces a notification, and lets the user pull the message into the agent's context on their next turn.
-
-## What's in scope, what isn't
-
-**In scope:**
-- Sending discrete handoff messages between Pi sessions
-- Receiving messages with terminal notifications
-- Per-session inbox with priority and message kinds (review, question, decision, broadcast)
-- Cross-tool: Pi can talk to Claude Code or Codex sessions on the same box (because they all use AMQ)
-- Skill that teaches Pi *when* to bridge (review handoff, follow-up question, blocker) and *how* (what to include, what to omit)
-- Human-in-the-loop on every transmission — the user sees what's being sent before it's sent
-
-**Out of scope:**
-- Shared context or memory across sessions (that's a different product)
-- Auto-orchestration (parent agent dispatching subtasks — Pi already has `subagent` for that)
-- Real-time streaming or live cursor sharing
-- Network-distributed agents (AMQ is single-machine-only by design)
-- Replacing the user's judgment on what gets handed off
-
-## Install
-
-```bash
-# 1. Install AMQ (the underlying queue)
-brew install avivsinai/tap/amq      # macOS
-# or:
-curl -fsSL https://raw.githubusercontent.com/avivsinai/agent-message-queue/main/scripts/install.sh | bash
-
-# 2. Install pi-bridge as a Pi package (once published)
-pi install github:amertkara/pi-bridge
-
-# Or, for local development:
-git clone git@github.com:amertkara/pi-bridge.git
-cd pi-bridge && npm install
-# Then point Pi at the extension via your config:
-#   pi --extension /path/to/pi-bridge/extension/pi-bridge.ts
-
-# 3. Initialize the AMQ root in your project (or globally via ~/.amqrc)
-amq coop init
-
-# 4. Set your handle for this terminal (or let pi-bridge derive one from cwd)
-export AM_ME=pi-$(basename "$PWD")
-amq presence set --me "$AM_ME" --status idle
-
-# 5. Open Pi as usual; pi-bridge wires up its tools and a footer status
-pi
-```
-
-### Configuration
-
-| Env var | Default | Effect |
-|---|---|---|
-| `AM_ME` | derived from `cwd` (`pi-<basename>`) | Handle this Pi session uses for sending and receiving |
-| `PI_BRIDGE_HANDLE` | — | Overrides `AM_ME` for pi-bridge specifically |
-| `AM_ROOT` | resolved by `amq` (`.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect) | AMQ queue root |
-
-Handles must match `[a-z0-9_-]+` (AMQ requirement). pi-bridge sanitizes derived handles automatically.
-
-## Example workflow
-
-Two Pi tabs, both attached to the same world checkout. Tab A is doing a code review; tab B was the author.
-
-**In tab A (review):**
-
-> "I'm done reviewing PR #662657. Hand off the high-priority feedback to the author session."
-
-Pi (with `pi-bridge` skill loaded):
-
-```
-I'll send a structured review handoff to the author session.
-
-Recipient: pi-author@world          [other Pi sessions discovered via amq sessions]
-Subject: PR #662657 — must-fix items
-Body:
-  3 must-fix issues identified:
-  1. def perform(shop_id:, changeset_id:) diverges from sibling pattern
-  2. not_nil! on rollout_treatment silently strands rollout
-  3. StatsD.increment misses 3 of 5 exit paths
-  Full review at: /tmp/pr-662657-review.md
-
-[Approve & send] / [Edit before sending] / [Cancel]
-```
-
-User approves. The message is delivered to tab B's inbox.
-
-**In tab B (author):** A terminal notification appears (via `amq wake`):
-
-> 📬 New message from pi-review (kind: review_handoff, priority: normal)
-
-User in tab B types:
-
-> "Pull the latest from the bridge inbox."
-
-Pi reads the message, the referenced file, and starts working on the fixes. The review-context lives in tab A; the author-context lives in tab B; the bridge transferred just the distilled handoff.
-
-## Repository layout
-
-```
-pi-bridge/
-├── README.md
-├── package.json                 # Pi package manifest
-├── extension/
-│   └── pi-bridge.ts             # Pi extension entry point (registers tools, hooks lifecycle)
-├── skills/
-│   └── pi-bridge/
-│       └── SKILL.md             # Teaches Pi when and how to bridge
-├── docs/
-│   ├── design.md                # Architecture decisions, threat model, alternatives considered
-│   └── workflows.md              # Patterns: review handoff, question, broadcast, decision thread
-└── examples/
-    └── two-tab-review.md        # End-to-end walkthrough
+┌─────────────┐         ┌─────────────┐
+│  Pi tab A   │         │  Pi tab B   │
+└──────┬──────┘         └──────┬──────┘
+       │                       │
+       └───────────┬───────────┘
+                   ▼
+         ┌──────────────────┐
+         │  amq (Go binary) │
+         │  ~/.agent-mail/  │
+         └──────────────────┘
+                   ▲
+       ┌───────────┴───────────┐
+       │                       │
+┌──────┴──────┐         ┌──────┴──────┐
+│ Claude Code │         │   Codex     │
+└─────────────┘         └─────────────┘
 ```
 
 ## Tools
-
-The extension registers these tools:
 
 | Tool | What it does |
 |---|---|
@@ -169,44 +44,49 @@ The extension registers these tools:
 | `bridge_sessions` | List active agent sessions known to AMQ |
 | `bridge_thread` | Show all messages in a thread |
 
-The skill at [`skills/pi-bridge/SKILL.md`](./skills/pi-bridge/SKILL.md) teaches Pi *when* to use these tools and *how* to compose distilled handoffs.
+The skill at [`skills/pi-bridge/SKILL.md`](./skills/pi-bridge/SKILL.md) teaches Pi *when* to use these tools and *how* to compose distilled handoffs. Every outbound message goes through an explicit user-approval step.
 
-## Roadmap
+## Install
 
-### v0.1 — Single-machine Pi-to-Pi (current)
-- [x] Extension wraps `amq send`, `amq list`, `amq read`, `amq reply`, `amq presence list`, `amq thread` as Pi tools
-- [x] Session lifecycle hooks (`session_start`, `session_shutdown`) with footer status
-- [x] Skill markdown teaches the review-handoff pattern with explicit user-approval gate
-- [x] Graceful degradation when `amq` is not installed
-- [ ] End-to-end verified between two Pi tabs in the same checkout
+```bash
+# Install AMQ (the underlying queue)
+brew install avivsinai/tap/amq      # macOS
+# or:
+curl -fsSL https://raw.githubusercontent.com/avivsinai/agent-message-queue/main/scripts/install.sh | bash
 
-### v0.2 — Cross-tool
-- [ ] Verify Pi ↔ Claude Code handoff (via `amc`) works end-to-end
-- [ ] Verify Pi ↔ Codex (via `amx`) works end-to-end
-- [ ] Document the cross-tool patterns in `workflows.md`
+# Clone for local development
+git clone git@github.com:amertkara/pi-bridge.git
+cd pi-bridge && pnpm install
 
-### v0.3 — Quality of life
-- [ ] Background poller using `amq watch` for terminal notifications via `amq wake`
-- [ ] Footer widget showing inbox count
-- [ ] Custom message renderer for inbound bridge messages
-- [ ] Optional auto-fetch on session start (off by default)
+# Wire it into Pi (point to the absolute path)
+pi --extension /path/to/pi-bridge/extension/pi-bridge.ts
 
-### v0.4 — Workflows
-- [ ] `bridge handoff <pr-number>` skill that distills a review into a structured handoff
-- [ ] `bridge ask <session> <question>` skill for cross-tab questions with thread continuity
-- [ ] `bridge decide <topic>` skill for multi-session decision threads
+# Initialize an AMQ root in your project (or globally via ~/.amqrc)
+amq coop init
+```
+
+## Configuration
+
+| Env var | Default | Effect |
+|---|---|---|
+| `AM_ME` | derived from `cwd` (`pi-<basename>`) | Handle this Pi session uses for sending and receiving |
+| `PI_BRIDGE_HANDLE` | — | Overrides `AM_ME` for pi-bridge specifically |
+| `AM_ROOT` | resolved by `amq` (`.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect) | AMQ queue root |
+
+Handles must match `[a-z0-9_-]+` (AMQ requirement). pi-bridge sanitizes derived handles automatically.
 
 ## Security model
 
-The user is the gate. Every outbound message is shown to the user before it leaves the tab; nothing is sent automatically. Inbound messages land in the inbox but are not auto-injected into the agent's context — the user has to explicitly pull them in. This eliminates the rogue-agent transmission vector at the cost of one approval click per send.
+The user is the gate. The skill instructs Pi to preview every outbound message and wait for explicit approval before calling `bridge_send`. Inbound messages land in the inbox but are not auto-injected into the receiving agent's context — the user explicitly fetches them via `bridge_inbox` / `bridge_read`. Transport is local-filesystem-only via AMQ; no network, no daemon. Messages are plain Markdown with a JSON header — readable with `cat`, debuggable with `grep`, version-controllable with `git`.
 
-The transport (AMQ) is local-filesystem-only. There's no network, no daemon, no external service. Messages are plain text Markdown with a JSON header — readable with `cat`, debuggable with `grep`, version-controllable with `git`.
+## Status
+
+Early. The extension typechecks and loads, with all six tools wired up. End-to-end testing across two Pi tabs and across Pi ↔ Claude Code is still pending. Treat this as a usable scaffold, not a battle-tested package.
 
 ## Related work
 
 - [Pi RFC #2715](https://github.com/badlogic/pi-mono/issues/2715) — proposes a similar extension over the Python `agent-event-bus` MCP server. `pi-bridge` is the AMQ-flavored alternative: file-based, no daemon, simpler.
 - [agent-message-queue](https://github.com/avivsinai/agent-message-queue) — the queue this repo wraps.
-- [agent-event-bus](https://github.com/avivsinai/agent-event-bus) — the alternative MCP-based bus.
 - [pi-autoresearch](https://github.com/davebcn87/pi-autoresearch) — a Pi extension shape this repo learns from.
 
 ## License
