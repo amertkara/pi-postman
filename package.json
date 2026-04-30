@@ -1,0 +1,34 @@
+{
+  "name": "pi-bridge",
+  "version": "0.0.1",
+  "description": "Pi extension that bridges agent sessions via AMQ (Agent Message Queue)",
+  "type": "module",
+  "license": "MIT",
+  "author": "Mert Kara <mert.kara@hey.com>",
+  "homepage": "https://github.com/amertkara/pi-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amertkara/pi-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/amertkara/pi-bridge/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "agent",
+    "amq",
+    "agent-message-queue",
+    "multi-agent",
+    "claude-code",
+    "codex"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension/pi-bridge.ts"
+    ],
+    "skills": [
+      "./skills/pi-bridge"
+    ]
+  }
+}
