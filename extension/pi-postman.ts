@@ -22,8 +22,9 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { type ChildProcess, spawn } from "node:child_process";
-import { basename } from "node:path";
+import { type FSWatcher, readdirSync, readFileSync, watch as fsWatch } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -105,8 +106,11 @@ function toolOk(text: string): AgentToolResult<undefined> {
 
 interface InboxState {
   count: number;
-  watcher: ChildProcess | undefined;
-  buffer: string;
+  watcher: FSWatcher | undefined;
+  // Files we've already announced. Tracked in-memory only — if Pi restarts,
+  // we re-announce nothing because we seed `seen` from the directory's
+  // current contents at watcher start.
+  seen: Set<string>;
 }
 
 function renderStatus(handle: string, count: number, suffix?: string): string {
@@ -131,138 +135,177 @@ function autoReactEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(raw.trim());
 }
 
+/**
+ * Resolve the AMQ root for the current process. Mirrors AMQ's resolution
+ * order: AM_ROOT env > AMQ_GLOBAL_ROOT env > ~/.agent-mail.
+ */
+function resolveAmqRoot(): string {
+  return (
+    process.env.AM_ROOT ?? process.env.AMQ_GLOBAL_ROOT ?? join(homedir(), ".agent-mail")
+  );
+}
+
+/**
+ * Parse a maildir message file. Files have the shape:
+ *   ---json
+ *   { ...header }
+ *   ---
+ *   body...
+ * If parsing fails (file partially written, mid-flight), returns undefined
+ * and the caller should retry on the next event.
+ */
+function parseMaildirFile(path: string): AmqMessageHeader | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  const match = text.match(/^---json\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!match || !match[1]) return undefined;
+  try {
+    return JSON.parse(match[1]) as AmqMessageHeader;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Watch the maildir `new/` directory directly via fs.watch. We previously
+ * tried to subprocess `amq watch --json`, but its real behavior is to dump
+ * existing messages once and exit — not a long-running event stream. Watching
+ * the directory ourselves is more reliable, has no buffering or version-skew
+ * problems, and avoids spawning an extra process per session.
+ */
 function startWatcher(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   handle: string,
   state: InboxState,
 ): void {
-  if (state.watcher && !state.watcher.killed) return;
+  if (state.watcher) return;
   const autoReact = autoReactEnabled();
+  const root = resolveAmqRoot();
+  const newDir = join(root, "agents", handle, "inbox", "new");
 
-  // --timeout 0 = wait forever. Without this, amq watch defaults to a 1m
-  // timeout and exits code 4 if no messages arrive in that window, which
-  // would silently disable notifications after a minute of inbox silence.
-  const child = spawn("amq", ["watch", "--me", handle, "--json", "--timeout", "0"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  child.on("error", (err) => {
-    ctx.ui.notify(`pi-postman watcher failed to start: ${err.message}`, "warning");
-    state.watcher = undefined;
-  });
-
-  child.stdout?.on("data", (chunk: Buffer) => {
-    state.buffer += chunk.toString("utf8");
-    let newlineIdx: number;
-    while ((newlineIdx = state.buffer.indexOf("\n")) !== -1) {
-      const line = state.buffer.slice(0, newlineIdx).trim();
-      state.buffer = state.buffer.slice(newlineIdx + 1);
-      if (!line) continue;
-      try {
-        // amq watch --json emits the full message envelope per event. Shape
-        // varies a bit by AMQ version (some use { header, body }, others
-        // flatten); accept both.
-        const raw = JSON.parse(line) as {
-          header?: AmqMessageHeader;
-          message?: { header?: AmqMessageHeader } & AmqMessageHeader;
-        } & AmqMessageHeader;
-        const header: AmqMessageHeader =
-          raw.header ?? raw.message?.header ?? raw.message ?? raw;
-        const from = header.from ?? "unknown";
-        const kind = header.kind ?? "message";
-        const subject = header.subject ?? "(no subject)";
-        const priority = header.priority ?? "normal";
-        state.count += 1;
-        ctx.ui.setStatus("pi-postman", renderStatus(handle, state.count));
-        const notifyType: "info" | "warning" =
-          priority === "urgent" ? "warning" : "info";
-        ctx.ui.notify(`📬 ${from} (${kind}): ${subject}`, notifyType);
-
-        // Optional auto-react: feed the agent a user-message describing the
-        // arrival so it triggers a turn and can decide to call postman_read.
-        // Off by default (toast + counter is enough for user-gated workflows).
-        // Enable with PI_POSTMAN_AUTO_REACT=1.
-        if (autoReact) {
-          const msgId = header.id ?? "(unknown id)";
-          const priorityNote = priority === "urgent" ? " [URGENT]" : "";
-          const prompt = [
-            `📬 New postman message arrived${priorityNote}.`,
-            `  from:    ${from}`,
-            `  kind:    ${kind}`,
-            `  subject: ${subject}`,
-            `  id:      ${msgId}`,
-            "",
-            `Read it with \`postman_read id="${msgId}"\`, then decide whether/how to respond. Auto-react is on; if you reply, preview the body to the user before calling postman_reply.`,
-          ].join("\n");
-          // pi.sendUserMessage triggers a turn. deliverAs:"followUp" queues
-          // cleanly if a turn is already streaming.
-          try {
-            // Cast through unknown: the .d.ts declares void, but the runtime
-            // impl in some pi versions returns a Promise. Catch async
-            // rejections so a failed inject doesn't take the watcher down.
-            const result = pi.sendUserMessage(prompt, {
-              deliverAs: "followUp",
-            }) as unknown as Promise<void> | void;
-            if (result && typeof (result as Promise<void>).then === "function") {
-              (result as Promise<void>).catch((err: Error) => {
-                ctx.ui.notify(
-                  `pi-postman auto-react failed: ${err.message}`,
-                  "warning",
-                );
-              });
-            }
-          } catch (err) {
-            ctx.ui.notify(
-              `pi-postman auto-react failed: ${(err as Error).message}`,
-              "warning",
-            );
-          }
-        }
-      } catch {
-        // Partial chunk before a newline, or malformed line. Ignore — next
-        // chunk usually completes the JSON.
-      }
+  // Seed `seen` with whatever's already in `new/` so we don't notify on
+  // historical mail at startup. Future arrivals are everything not in `seen`.
+  try {
+    for (const entry of readdirSync(newDir)) {
+      if (entry.endsWith(".md")) state.seen.add(entry);
     }
-  });
-
-  child.stderr?.on("data", () => {
-    // Stderr from amq watch is informational. Swallow to avoid noisy toasts.
-  });
-
-  child.on("exit", (code, signal) => {
-    state.watcher = undefined;
-    // Code 0 or SIGTERM = clean shutdown (we killed it on session_shutdown).
-    // Code 4 = amq watch timeout. Shouldn't happen with --timeout 0, but if
-    //          it ever does, just respawn silently rather than nag the user.
-    if (signal === "SIGTERM" || code === 0) return;
-    if (code === 4) {
-      // Respawn after a tick. Async to avoid recursive spawn within the exit
-      // handler.
-      setTimeout(() => startWatcher(pi, ctx, handle, state), 100);
-      return;
-    }
+  } catch (err) {
+    // newDir doesn't exist yet — amq creates it on first send/list. We can
+    // still set up the watcher on the parent, but for simplicity just bail
+    // and ask the user to send/receive once to materialize the dir.
     ctx.ui.notify(
-      `pi-postman watcher exited (code=${code}). Inbox notifications disabled.`,
+      `pi-postman: inbox dir ${newDir} not found yet (${(err as Error).message}). Notifications will start once amq creates it.`,
+      "info",
+    );
+    return;
+  }
+
+  let watcher: FSWatcher;
+  try {
+    watcher = fsWatch(newDir, { persistent: false }, (eventType, filename) => {
+      if (!filename) return;
+      if (!filename.endsWith(".md")) return;
+      // 'rename' fires for both create and delete on macOS; check existence.
+      if (state.seen.has(filename)) return;
+      const fullPath = join(newDir, filename);
+      const header = parseMaildirFile(fullPath);
+      if (!header) {
+        // File may not be fully written yet. Retry once after a tick.
+        setTimeout(() => {
+          if (state.seen.has(filename)) return;
+          const retry = parseMaildirFile(fullPath);
+          if (retry) handleNewMessage(pi, ctx, handle, state, autoReact, filename, retry);
+        }, 50);
+        return;
+      }
+      handleNewMessage(pi, ctx, handle, state, autoReact, filename, header);
+    });
+  } catch (err) {
+    ctx.ui.notify(
+      `pi-postman: failed to watch ${newDir}: ${(err as Error).message}`,
       "warning",
     );
+    return;
+  }
+
+  watcher.on("error", (err: Error) => {
+    ctx.ui.notify(`pi-postman watcher error: ${err.message}`, "warning");
   });
 
-  state.watcher = child;
+  state.watcher = watcher;
+}
+
+function handleNewMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  handle: string,
+  state: InboxState,
+  autoReact: boolean,
+  filename: string,
+  header: AmqMessageHeader,
+): void {
+  state.seen.add(filename);
+
+  const from = header.from ?? "unknown";
+  const kind = header.kind ?? "message";
+  const subject = header.subject ?? "(no subject)";
+  const priority = header.priority ?? "normal";
+  state.count += 1;
+  ctx.ui.setStatus("pi-postman", renderStatus(handle, state.count));
+  const notifyType: "info" | "warning" = priority === "urgent" ? "warning" : "info";
+  ctx.ui.notify(`📬 ${from} (${kind}): ${subject}`, notifyType);
+
+  if (!autoReact) return;
+
+  // Optional auto-react: feed the agent a user-message describing the arrival
+  // so it triggers a turn and can decide to call postman_read.
+  const msgId = header.id ?? "(unknown id)";
+  const priorityNote = priority === "urgent" ? " [URGENT]" : "";
+  const prompt = [
+    `📬 New postman message arrived${priorityNote}.`,
+    `  from:    ${from}`,
+    `  kind:    ${kind}`,
+    `  subject: ${subject}`,
+    `  id:      ${msgId}`,
+    "",
+    `Read it with \`postman_read id="${msgId}"\`, then decide whether/how to respond. Auto-react is on; if you reply, preview the body to the user before calling postman_reply.`,
+  ].join("\n");
+  try {
+    // pi.sendUserMessage triggers a turn. deliverAs:"followUp" queues cleanly
+    // if a turn is already streaming. The .d.ts declares void; runtime impls
+    // sometimes return a Promise. Cast through unknown so we can catch async
+    // rejections without a failed inject taking the watcher down.
+    const result = pi.sendUserMessage(prompt, {
+      deliverAs: "followUp",
+    }) as unknown as Promise<void> | void;
+    if (result && typeof (result as Promise<void>).then === "function") {
+      (result as Promise<void>).catch((err: Error) => {
+        ctx.ui.notify(
+          `pi-postman auto-react failed: ${err.message}`,
+          "warning",
+        );
+      });
+    }
+  } catch (err) {
+    ctx.ui.notify(`pi-postman auto-react failed: ${(err as Error).message}`, "warning");
+  }
 }
 
 function stopWatcher(state: InboxState): void {
-  if (state.watcher && !state.watcher.killed) {
-    state.watcher.kill("SIGTERM");
-  }
+  if (state.watcher) state.watcher.close();
   state.watcher = undefined;
-  state.buffer = "";
+  state.seen.clear();
 }
 
 export default function (pi: ExtensionAPI) {
   // Stable handle, derived once per session.
   const handle = deriveHandle(process.cwd());
-  const inboxState: InboxState = { count: 0, watcher: undefined, buffer: "" };
+  const inboxState: InboxState = { count: 0, watcher: undefined, seen: new Set() };
 
   // ----- session lifecycle -----
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
