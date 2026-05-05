@@ -18,6 +18,7 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { type ChildProcess, spawn } from "node:child_process";
 import { basename } from "node:path";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -36,6 +37,18 @@ function deriveHandle(cwd: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 32) || "pi";
   return sanitized.startsWith("pi-") ? sanitized : `pi-${sanitized}`;
+}
+
+interface AmqMessageHeader {
+  id?: string;
+  from?: string;
+  to?: string[] | string;
+  subject?: string;
+  kind?: string;
+  priority?: string;
+  thread?: string;
+  created?: string;
+  reply_to?: string;
 }
 
 interface AmqExecResult {
@@ -86,9 +99,101 @@ function toolOk(text: string): AgentToolResult<undefined> {
 // Extension
 // ──────────────────────────────────────────────────────────────────────────────
 
+interface InboxState {
+  count: number;
+  watcher: ChildProcess | undefined;
+  buffer: string;
+}
+
+function renderStatus(handle: string, count: number, suffix?: string): string {
+  const counter = count > 0 ? ` · 📬 ${count}` : "";
+  const tail = suffix ? ` (${suffix})` : "";
+  return `postman: ${handle}${counter}${tail}`;
+}
+
+/**
+ * Spawn `amq watch --me <handle> --json` as a long-running child process.
+ *
+ * AMQ uses fsnotify under the hood, so this is event-driven (not polling) and
+ * cheap at idle. Each new message produces one line of JSON on stdout. We
+ * surface a notification + bump the inbox counter in the footer. Inbound
+ * messages are NOT injected into the agent's context — the user still has to
+ * explicitly call postman_inbox / postman_read to pull them in.
+ */
+function startWatcher(ctx: ExtensionContext, handle: string, state: InboxState): void {
+  if (state.watcher && !state.watcher.killed) return;
+
+  const child = spawn("amq", ["watch", "--me", handle, "--json"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.on("error", (err) => {
+    ctx.ui.notify(`pi-postman watcher failed to start: ${err.message}`, "warning");
+    state.watcher = undefined;
+  });
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    state.buffer += chunk.toString("utf8");
+    let newlineIdx: number;
+    while ((newlineIdx = state.buffer.indexOf("\n")) !== -1) {
+      const line = state.buffer.slice(0, newlineIdx).trim();
+      state.buffer = state.buffer.slice(newlineIdx + 1);
+      if (!line) continue;
+      try {
+        // amq watch --json emits the full message envelope per event. Shape
+        // varies a bit by AMQ version (some use { header, body }, others
+        // flatten); accept both.
+        const raw = JSON.parse(line) as {
+          header?: AmqMessageHeader;
+          message?: { header?: AmqMessageHeader } & AmqMessageHeader;
+        } & AmqMessageHeader;
+        const header: AmqMessageHeader =
+          raw.header ?? raw.message?.header ?? raw.message ?? raw;
+        const from = header.from ?? "unknown";
+        const kind = header.kind ?? "message";
+        const subject = header.subject ?? "(no subject)";
+        const priority = header.priority ?? "normal";
+        state.count += 1;
+        ctx.ui.setStatus("pi-postman", renderStatus(handle, state.count));
+        const notifyType: "info" | "warning" =
+          priority === "urgent" ? "warning" : "info";
+        ctx.ui.notify(`📬 ${from} (${kind}): ${subject}`, notifyType);
+      } catch {
+        // Partial chunk before a newline, or malformed line. Ignore — next
+        // chunk usually completes the JSON.
+      }
+    }
+  });
+
+  child.stderr?.on("data", () => {
+    // Stderr from amq watch is informational. Swallow to avoid noisy toasts.
+  });
+
+  child.on("exit", (code, signal) => {
+    state.watcher = undefined;
+    if (code !== 0 && code !== null && signal !== "SIGTERM") {
+      ctx.ui.notify(
+        `pi-postman watcher exited (code=${code}). Inbox notifications disabled.`,
+        "warning",
+      );
+    }
+  });
+
+  state.watcher = child;
+}
+
+function stopWatcher(state: InboxState): void {
+  if (state.watcher && !state.watcher.killed) {
+    state.watcher.kill("SIGTERM");
+  }
+  state.watcher = undefined;
+  state.buffer = "";
+}
+
 export default function (pi: ExtensionAPI) {
   // Stable handle, derived once per session.
   const handle = deriveHandle(process.cwd());
+  const inboxState: InboxState = { count: 0, watcher: undefined, buffer: "" };
 
   // ----- session lifecycle -----
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
@@ -104,15 +209,15 @@ export default function (pi: ExtensionAPI) {
     }
     if (!result.ok) {
       ctx.ui.notify(`pi-postman: amq health check failed (${result.stderr.trim()})`, "warning");
-      ctx.ui.setStatus("pi-postman", `postman: ${handle} (degraded)`);
+      ctx.ui.setStatus("pi-postman", renderStatus(handle, 0, "degraded"));
       return;
     }
-    ctx.ui.setStatus("pi-postman", `postman: ${handle}`);
+    ctx.ui.setStatus("pi-postman", renderStatus(handle, 0));
+    startWatcher(ctx, handle, inboxState);
   });
 
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
-    // AMQ has no per-session register/unregister — handles are passed per-command.
-    // Just clear our footer status.
+    stopWatcher(inboxState);
     if (ctx.hasUI) ctx.ui.setStatus("pi-postman", undefined);
   });
 
@@ -213,7 +318,7 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, _signal, _onUpdate, ctx) {
       const args = ["list", "--me", handle, "--json"];
       args.push(params.include_cur ? "--cur" : "--new");
       if (params.limit !== undefined) args.push("--limit", String(params.limit));
@@ -225,6 +330,15 @@ export default function (pi: ExtensionAPI) {
       if (!result.ok) {
         return toolError(`postman_inbox failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
+
+      // Reset the unread counter — the user has now looked at the inbox, so
+      // the watcher's "messages arrived since you last looked" tally goes
+      // back to zero. Future watcher events will count up from here again.
+      if (inboxState.count > 0) {
+        inboxState.count = 0;
+        if (ctx.hasUI) ctx.ui.setStatus("pi-postman", renderStatus(handle, 0));
+      }
+
       const stdout = result.stdout.trim();
       if (!stdout || stdout === "[]" || stdout === "null") {
         return toolOk("Inbox is empty.");
@@ -273,32 +387,30 @@ export default function (pi: ExtensionAPI) {
         return toolError(`postman_read failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       const stdout = result.stdout.trim();
-      // Try to format the JSON; fall back to raw output.
+      // `amq read --json` returns { header: {...fields}, body: "..." }.
+      // Tolerate the legacy flat shape too in case AMQ ever changes it.
       try {
-        const msg = JSON.parse(stdout) as {
-          id?: string;
-          from?: string;
-          to?: string[] | string;
-          subject?: string;
-          kind?: string;
-          priority?: string;
-          thread?: string;
-          created?: string;
+        const parsed = JSON.parse(stdout) as {
+          header?: AmqMessageHeader;
           body?: string;
-        };
+        } & AmqMessageHeader;
+        const header: AmqMessageHeader = parsed.header ?? parsed;
+        const body = parsed.body ?? "";
         const headerLines = [
-          `id:       ${msg.id ?? params.id}`,
-          `from:     ${msg.from ?? "?"}`,
-          `to:       ${Array.isArray(msg.to) ? msg.to.join(", ") : (msg.to ?? "?")}`,
-          `kind:     ${msg.kind ?? "?"}`,
-          msg.priority ? `priority: ${msg.priority}` : "",
-          msg.thread ? `thread:   ${msg.thread}` : "",
-          msg.created ? `created:  ${msg.created}` : "",
-          `subject:  ${msg.subject ?? "(no subject)"}`,
+          `id:       ${header.id ?? params.id}`,
+          `from:     ${header.from ?? "(unknown)"}`,
+          `to:       ${Array.isArray(header.to) ? header.to.join(", ") : (header.to ?? "(unknown)")}`,
+          `kind:     ${header.kind ?? "(unknown)"}`,
+          header.priority ? `priority: ${header.priority}` : "",
+          header.thread ? `thread:   ${header.thread}` : "",
+          header.created ? `created:  ${header.created}` : "",
+          `subject:  ${header.subject ?? "(no subject)"}`,
         ].filter(Boolean);
-        return toolOk(`${headerLines.join("\n")}\n\n${msg.body ?? ""}`.trimEnd());
+        return toolOk(`${headerLines.join("\n")}\n\n${body}`.trimEnd());
       } catch {
-        return toolOk(stdout);
+        // Show the raw output rather than swallowing — helpful for debugging
+        // header-parse failures rather than printing '?' everywhere.
+        return toolOk(`(unable to parse amq read JSON; showing raw output)\n\n${stdout}`);
       }
     },
   });
@@ -322,7 +434,8 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_id, params) {
-      const args = [
+      // Try the proper threaded path first.
+      const replyArgs = [
         "reply",
         "--me",
         handle,
@@ -333,14 +446,90 @@ export default function (pi: ExtensionAPI) {
         "--body",
         params.body,
       ];
-      if (params.priority) args.push("--priority", params.priority);
+      if (params.priority) replyArgs.push("--priority", params.priority);
 
-      const result = await runAmq(pi, args);
-      if (!result.ok) {
-        return toolError(`postman_reply failed: ${result.stderr.trim() || result.stdout.trim()}`);
+      const replyResult = await runAmq(pi, replyArgs);
+      if (replyResult.ok) {
+        const detail = replyResult.stdout.trim();
+        return toolOk(detail || `Replied to ${params.id} with kind=${params.kind}.`);
       }
-      const detail = result.stdout.trim();
-      return toolOk(detail || `Replied to ${params.id} with kind=${params.kind}.`);
+
+      // Detect the known AMQ bug where reply_to is corrupted with the AMQ
+      // root directory name (e.g. "pi-tab-a@.agent-mail"). Symptom:
+      //   invalid session in reply_to "...@.agent-mail": invalid handle ...
+      // When that happens, fall back to a fresh send with the original thread
+      // id and 're: ' subject prefix so threading is preserved despite the
+      // upstream bug. https://github.com/avivsinai/agent-message-queue
+      const stderr = replyResult.stderr.trim();
+      const replyToCorrupted =
+        /invalid session in reply_to .*: invalid handle/i.test(stderr) ||
+        /reply_to/i.test(stderr);
+      if (!replyToCorrupted) {
+        return toolError(`postman_reply failed: ${stderr || replyResult.stdout.trim()}`);
+      }
+
+      // Re-fetch the original to recover from + thread, since reply_to is
+      // unusable. amq read --json returns { header: {...}, body: "..." }.
+      const fetched = await runAmq(pi, ["read", "--me", handle, "--id", params.id, "--json"]);
+      if (!fetched.ok) {
+        return toolError(
+          `postman_reply: amq reply failed with reply_to bug, and re-fetching the original to fall back also failed: ${fetched.stderr.trim() || fetched.stdout.trim()}`,
+        );
+      }
+      let header: AmqMessageHeader;
+      try {
+        const parsed = JSON.parse(fetched.stdout.trim()) as {
+          header?: AmqMessageHeader;
+        } & AmqMessageHeader;
+        header = parsed.header ?? parsed;
+      } catch {
+        return toolError(
+          `postman_reply: could not parse original message JSON to fall back. Raw:\n${fetched.stdout.trim()}`,
+        );
+      }
+
+      const recipient = header.from;
+      if (!recipient) {
+        return toolError(
+          `postman_reply: original message has no \`from\` field; cannot fall back to send.`,
+        );
+      }
+      const subject = header.subject?.toLowerCase().startsWith("re:")
+        ? header.subject
+        : `re: ${header.subject ?? "(no subject)"}`;
+
+      const sendArgs = [
+        "send",
+        "--me",
+        handle,
+        "--to",
+        recipient,
+        "--subject",
+        subject,
+        "--kind",
+        params.kind,
+        "--body",
+        params.body,
+      ];
+      if (header.thread) sendArgs.push("--thread", header.thread);
+      if (params.priority) sendArgs.push("--priority", params.priority);
+
+      const sendResult = await runAmq(pi, sendArgs);
+      if (!sendResult.ok) {
+        return toolError(
+          `postman_reply fallback (send) failed after amq reply hit the reply_to bug: ${sendResult.stderr.trim() || sendResult.stdout.trim()}`,
+        );
+      }
+      const detail = sendResult.stdout.trim();
+      return toolOk(
+        [
+          `Replied to ${params.id} via send-fallback (amq reply hit the upstream reply_to handle-parse bug).`,
+          header.thread ? `Thread preserved: ${header.thread}` : "No thread on original; reply starts a new one.",
+          detail,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
     },
   });
 
