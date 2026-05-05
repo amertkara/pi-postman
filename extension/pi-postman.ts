@@ -7,9 +7,13 @@
  * are not auto-injected into the receiving agent's context.
  *
  * Configuration via env:
- *   AM_ME           — agent handle for this Pi session (default: `pi-<basename(cwd)>`)
- *   AM_ROOT         — AMQ root (default: AMQ resolves via `.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect)
+ *   AM_ME             — agent handle for this Pi session (default: `pi-<basename(cwd)>`)
+ *   AM_ROOT           — AMQ root (default: AMQ resolves via `.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect)
  *   PI_POSTMAN_HANDLE — overrides AM_ME for this extension specifically
+ *   PI_POSTMAN_AUTO_REACT — if "1", true, or yes, the watcher injects a user
+ *                          message into the session on each new postman event,
+ *                          causing the agent to immediately consider/fetch it.
+ *                          Default: off (toast + footer counter only).
  */
 
 import type {
@@ -107,8 +111,9 @@ interface InboxState {
 
 function renderStatus(handle: string, count: number, suffix?: string): string {
   const counter = count > 0 ? ` · 📬 ${count}` : "";
+  const autoReact = autoReactEnabled() ? " · auto" : "";
   const tail = suffix ? ` (${suffix})` : "";
-  return `postman: ${handle}${counter}${tail}`;
+  return `postman: ${handle}${counter}${autoReact}${tail}`;
 }
 
 /**
@@ -120,10 +125,25 @@ function renderStatus(handle: string, count: number, suffix?: string): string {
  * messages are NOT injected into the agent's context — the user still has to
  * explicitly call postman_inbox / postman_read to pull them in.
  */
-function startWatcher(ctx: ExtensionContext, handle: string, state: InboxState): void {
-  if (state.watcher && !state.watcher.killed) return;
+function autoReactEnabled(): boolean {
+  const raw = process.env.PI_POSTMAN_AUTO_REACT;
+  if (!raw) return false;
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
 
-  const child = spawn("amq", ["watch", "--me", handle, "--json"], {
+function startWatcher(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  handle: string,
+  state: InboxState,
+): void {
+  if (state.watcher && !state.watcher.killed) return;
+  const autoReact = autoReactEnabled();
+
+  // --timeout 0 = wait forever. Without this, amq watch defaults to a 1m
+  // timeout and exits code 4 if no messages arrive in that window, which
+  // would silently disable notifications after a minute of inbox silence.
+  const child = spawn("amq", ["watch", "--me", handle, "--json", "--timeout", "0"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -158,6 +178,47 @@ function startWatcher(ctx: ExtensionContext, handle: string, state: InboxState):
         const notifyType: "info" | "warning" =
           priority === "urgent" ? "warning" : "info";
         ctx.ui.notify(`📬 ${from} (${kind}): ${subject}`, notifyType);
+
+        // Optional auto-react: feed the agent a user-message describing the
+        // arrival so it triggers a turn and can decide to call postman_read.
+        // Off by default (toast + counter is enough for user-gated workflows).
+        // Enable with PI_POSTMAN_AUTO_REACT=1.
+        if (autoReact) {
+          const msgId = header.id ?? "(unknown id)";
+          const priorityNote = priority === "urgent" ? " [URGENT]" : "";
+          const prompt = [
+            `📬 New postman message arrived${priorityNote}.`,
+            `  from:    ${from}`,
+            `  kind:    ${kind}`,
+            `  subject: ${subject}`,
+            `  id:      ${msgId}`,
+            "",
+            `Read it with \`postman_read id="${msgId}"\`, then decide whether/how to respond. Auto-react is on; if you reply, preview the body to the user before calling postman_reply.`,
+          ].join("\n");
+          // pi.sendUserMessage triggers a turn. deliverAs:"followUp" queues
+          // cleanly if a turn is already streaming.
+          try {
+            // Cast through unknown: the .d.ts declares void, but the runtime
+            // impl in some pi versions returns a Promise. Catch async
+            // rejections so a failed inject doesn't take the watcher down.
+            const result = pi.sendUserMessage(prompt, {
+              deliverAs: "followUp",
+            }) as unknown as Promise<void> | void;
+            if (result && typeof (result as Promise<void>).then === "function") {
+              (result as Promise<void>).catch((err: Error) => {
+                ctx.ui.notify(
+                  `pi-postman auto-react failed: ${err.message}`,
+                  "warning",
+                );
+              });
+            }
+          } catch (err) {
+            ctx.ui.notify(
+              `pi-postman auto-react failed: ${(err as Error).message}`,
+              "warning",
+            );
+          }
+        }
       } catch {
         // Partial chunk before a newline, or malformed line. Ignore — next
         // chunk usually completes the JSON.
@@ -171,12 +232,20 @@ function startWatcher(ctx: ExtensionContext, handle: string, state: InboxState):
 
   child.on("exit", (code, signal) => {
     state.watcher = undefined;
-    if (code !== 0 && code !== null && signal !== "SIGTERM") {
-      ctx.ui.notify(
-        `pi-postman watcher exited (code=${code}). Inbox notifications disabled.`,
-        "warning",
-      );
+    // Code 0 or SIGTERM = clean shutdown (we killed it on session_shutdown).
+    // Code 4 = amq watch timeout. Shouldn't happen with --timeout 0, but if
+    //          it ever does, just respawn silently rather than nag the user.
+    if (signal === "SIGTERM" || code === 0) return;
+    if (code === 4) {
+      // Respawn after a tick. Async to avoid recursive spawn within the exit
+      // handler.
+      setTimeout(() => startWatcher(pi, ctx, handle, state), 100);
+      return;
     }
+    ctx.ui.notify(
+      `pi-postman watcher exited (code=${code}). Inbox notifications disabled.`,
+      "warning",
+    );
   });
 
   state.watcher = child;
@@ -213,7 +282,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     ctx.ui.setStatus("pi-postman", renderStatus(handle, 0));
-    startWatcher(ctx, handle, inboxState);
+    startWatcher(pi, ctx, handle, inboxState);
   });
 
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {

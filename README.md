@@ -72,12 +72,23 @@ amq coop init
 | `AM_ME` | derived from `cwd` (`pi-<basename>`) | Handle this Pi session uses for sending and receiving |
 | `PI_POSTMAN_HANDLE` | — | Overrides `AM_ME` for pi-postman specifically |
 | `AM_ROOT` | resolved by `amq` (`.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect) | AMQ queue root |
+| `PI_POSTMAN_AUTO_REACT` | off | When `1`/`true`/`yes`/`on`, the inbox watcher injects a user message into the agent's session for each new postman event, triggering an immediate turn so the agent can decide whether to read/reply. Off by default — default behavior is toast + footer counter only. |
 
 Handles must match `[a-z0-9_-]+` (AMQ requirement). pi-postman sanitizes derived handles automatically.
 
+## Live notifications
+
+On `session_start`, pi-postman spawns `amq watch --me <handle> --json --timeout 0` as a long-running child process. Each new message produces:
+
+- A **toast notification** (`📬 from (kind): subject`).
+- A **footer counter** that ticks up: `postman: pi-tab-b · 📬 2`. Resets to 0 when you call `postman_inbox`.
+- **(Auto-react mode only)** A user-message injection that triggers a turn so the agent reacts immediately.
+
+AMQ uses fsnotify under the hood, so this is event-driven, not polling — cheap at idle. The watcher is killed cleanly on `session_shutdown`.
+
 ## Security model
 
-The user is the gate. The skill instructs Pi to preview every outbound message and wait for explicit approval before calling `postman_send`. Inbound messages land in the inbox but are not auto-injected into the receiving agent's context — the user explicitly fetches them via `postman_inbox` / `postman_read`. Transport is local-filesystem-only via AMQ; no network, no daemon. Messages are plain Markdown with a JSON header — readable with `cat`, debuggable with `grep`, version-controllable with `git`.
+The user is the gate. The skill instructs Pi to preview every outbound message and wait for explicit approval before calling `postman_send`. **By default**, inbound messages land in the inbox but are not auto-injected into the receiving agent's context — the user explicitly fetches them via `postman_inbox` / `postman_read`. **With `PI_POSTMAN_AUTO_REACT=1`**, the watcher injects an arrival notice into the agent's session and the agent decides what to do; outbound replies still go through the same preview-and-approve flow before `postman_reply`. Transport is local-filesystem-only via AMQ; no network, no daemon. Messages are plain Markdown with a JSON header — readable with `cat`, debuggable with `grep`, version-controllable with `git`.
 
 ## Status
 
