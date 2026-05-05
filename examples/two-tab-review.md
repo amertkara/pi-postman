@@ -1,6 +1,6 @@
 # Example: Two-tab code review handoff
 
-A walkthrough of the canonical pi-bridge flow.
+A walkthrough of the canonical pi-postman flow.
 
 ## Setup
 
@@ -10,7 +10,7 @@ You have two Pi tabs open in iTerm. Both are attached to the same Shopify world 
 # Tab A: review session, opened in the worktree
 $ cd ~/world/trees/typ-osp-flags/src
 $ pi
-# Pi-bridge registers this session as `pi-typ-osp-flags-review` (or similar)
+# Pi-postman registers this session as `pi-typ-osp-flags-review` (or similar)
 
 # Tab B: author session, also in the worktree (or a sibling worktree)
 $ cd ~/world/trees/typ-osp-flags/src
@@ -24,9 +24,9 @@ You run the PR review skill. It produces a long, detailed review document. Pi sa
 
 You: *"Save the must-fix items to a structured handoff and send to the author session."*
 
-Pi-bridge skill activates:
+Pi-postman skill activates:
 
-1. Calls `bridge_sessions()` → returns:
+1. Calls `postman_sessions()` → returns:
    ```
    pi-typ-osp-flags-review (this)
    pi-typ-osp-flags-author
@@ -51,7 +51,7 @@ Pi-bridge skill activates:
 4. Shows you the preview:
    ```
    ────────────────────────────────────────
-   About to send via pi-bridge:
+   About to send via pi-postman:
 
      To:       pi-typ-osp-flags-author
      Kind:     review_handoff
@@ -63,33 +63,33 @@ Pi-bridge skill activates:
    [Approve & send] / [Edit] / [Cancel]
    ────────────────────────────────────────
    ```
-5. You type "send it" → Pi calls `bridge_send(...)` → returns `msg_id: 01h7zk2...`.
+5. You type "send it" → Pi calls `postman_send(...)` → returns `msg_id: 01h7zk2...`.
 
 ## Tab B — receive and act
 
 A terminal notification appears (via `amq wake`):
 
 ```
-📬 pi-bridge: New message from pi-typ-osp-flags-review
+📬 pi-postman: New message from pi-typ-osp-flags-review
    Kind: review_handoff · Priority: normal
    Subject: PR #656409 — 3 must-fix items
 ```
 
 You switch to tab B.
 
-You: *"What's in the bridge inbox?"*
+You: *"What's in the postman inbox?"*
 
-Pi-bridge:
-1. `bridge_inbox(limit: 10)` → shows one new message.
-2. You: *"Read it."* → `bridge_read(msg_id)`.
+Pi-postman:
+1. `postman_inbox(limit: 10)` → shows one new message.
+2. You: *"Read it."* → `postman_read(msg_id)`.
 3. Pi reads `/tmp/pr-656409-review.md` for full context.
 4. Starts addressing the three must-fix items.
 
-When you finish the fixes, you can `bridge_reply(msg_id, kind: 'ack', body: '3 must-fix items addressed in commit <sha>')` to close the loop.
+When you finish the fixes, you can `postman_reply(msg_id, kind: 'ack', body: '3 must-fix items addressed in commit <sha>')` to close the loop.
 
-## What the user did vs what pi-bridge did
+## What the user did vs what pi-postman did
 
-| Step | User | pi-bridge |
+| Step | User | pi-postman |
 |---|---|---|
 | Compose review | runs review skill | — |
 | Distill handoff | tells Pi what to send | drafts the structured message |
@@ -99,4 +99,4 @@ When you finish the fixes, you can `bridge_reply(msg_id, kind: 'ack', body: '3 m
 | Read inbound | asks "what's in the inbox?" | calls `amq list` and `amq read` |
 | Act on it | works on the fixes | provides the message and the referenced file |
 
-The user is the gate. pi-bridge is the courier.
+The user is the gate. pi-postman is the courier.

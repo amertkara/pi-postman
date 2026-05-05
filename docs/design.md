@@ -1,4 +1,4 @@
-# pi-bridge — Design
+# pi-postman — Design
 
 ## Goals
 
@@ -27,9 +27,9 @@ AMQ owns:
 - Cross-project federation (out of scope for v0.1, but available)
 - Terminal notifications via `amq wake`
 
-pi-bridge owns:
+pi-postman owns:
 - Pi extension wiring: `session_start`, `session_shutdown`, tool registration, status widgets
-- A skill that teaches Pi *when* to use the bridge tools and *how* to compose messages
+- A skill that teaches Pi *when* to use the postman tools and *how* to compose messages
 - The user-approval gate on outbound transmission
 - Mapping Pi session ids to AMQ handles
 
@@ -37,8 +37,8 @@ pi-bridge owns:
 
 The reason this isn't just "give every agent root over each other's context": a poorly-prompted or compromised agent could try to inject prompts into a peer session. Mitigations:
 
-1. **Outbound approval**: every `bridge_send` shows the full message body to the user and waits for explicit approval before transmitting. The skill enforces this; the extension does not auto-send.
-2. **Inbound non-injection**: messages land in the inbox but are NOT auto-injected into the receiving agent's context. The receiving agent (and its user) explicitly fetches via `bridge_inbox` / `bridge_read` when ready.
+1. **Outbound approval**: every `postman_send` shows the full message body to the user and waits for explicit approval before transmitting. The skill enforces this; the extension does not auto-send.
+2. **Inbound non-injection**: messages land in the inbox but are NOT auto-injected into the receiving agent's context. The receiving agent (and its user) explicitly fetches via `postman_inbox` / `postman_read` when ready.
 3. **Local-only**: AMQ is single-machine, files only. There is no network surface. An attacker would need filesystem access — at which point they have larger problems.
 4. **No automatic actions**: messages are text. They cannot directly invoke tools, modify files, or run shell commands. Any action the recipient takes is mediated by the recipient's agent and the recipient's user.
 
@@ -62,7 +62,7 @@ For the workflow this extension targets — discrete handoffs between local agen
 
 ### Push, pull, or hybrid for context handoff?
 
-**Hybrid.** Bridge messages are short pointers; full artifacts (review docs, design docs, draft files) live on disk and are referenced by path. This keeps notifications cheap and inboxes scannable, while preserving the full context for whoever pulls it in.
+**Hybrid.** Postman messages are short pointers; full artifacts (review docs, design docs, draft files) live on disk and are referenced by path. This keeps notifications cheap and inboxes scannable, while preserving the full context for whoever pulls it in.
 
 ### Does the recipient auto-fetch?
 
@@ -70,19 +70,19 @@ No. Inbox is checked on user demand. This is the "no rogue agent injection" guar
 
 ### Handle naming
 
-Default to `pi-<short-cwd>` (e.g. `pi-pi-bridge`, `pi-world-trees-typ-osp-flags`). User can override via `PI_BRIDGE_HANDLE`. Stable across `/resume`.
+Default to `pi-<short-cwd>` (e.g. `pi-pi-postman`, `pi-world-trees-typ-osp-flags`). User can override via `PI_POSTMAN_HANDLE`. Stable across `/resume`.
 
 ### Threading
 
-Use AMQ's native thread support. A `bridge_send` with no `thread:` starts a new thread; `bridge_reply` continues the parent's thread.
+Use AMQ's native thread support. A `postman_send` with no `thread:` starts a new thread; `postman_reply` continues the parent's thread.
 
 ### Errors
 
-If AMQ isn't installed or the bus isn't running, tools return a clear error message and a one-line install hint. Pi sessions still run; they just can't bridge until AMQ is available.
+If AMQ isn't installed or the bus isn't running, tools return a clear error message and a one-line install hint. Pi sessions still run; they just can't relay until AMQ is available.
 
 ## Open questions
 
-- How does pi-bridge interact with multiple worktrees of the same repo? Is the AMQ root per-worktree or per-repo? (Default: per-worktree for now; revisit when federation lands.)
+- How does pi-postman interact with multiple worktrees of the same repo? Is the AMQ root per-worktree or per-repo? (Default: per-worktree for now; revisit when federation lands.)
 - Should the inbox be auto-checked on `session_start` and offered as a notification? (Probably yes, but inbox-read still requires user action.)
-- Should `bridge_send` support attaching a file directly (vs referencing a path)? Pro: simpler for the user. Con: re-creates the "dump everything" anti-pattern. Leaning no.
+- Should `postman_send` support attaching a file directly (vs referencing a path)? Pro: simpler for the user. Con: re-creates the "dump everything" anti-pattern. Leaning no.
 - How do we handle a recipient that doesn't exist? Bounce back to the sender, queue for later, or hard error? (Probably hard error with a list of known sessions in the response.)

@@ -1,5 +1,5 @@
 /**
- * pi-bridge — Pi extension that bridges agent sessions via AMQ
+ * pi-postman — Pi extension that relays messages between agent sessions via AMQ
  *
  * Wraps `amq` (https://github.com/avivsinai/agent-message-queue) so a Pi
  * session can send structured handoffs to other agent sessions on the same
@@ -9,7 +9,7 @@
  * Configuration via env:
  *   AM_ME           — agent handle for this Pi session (default: `pi-<basename(cwd)>`)
  *   AM_ROOT         — AMQ root (default: AMQ resolves via `.amqrc` / `AMQ_GLOBAL_ROOT` / auto-detect)
- *   PI_BRIDGE_HANDLE — overrides AM_ME for this extension specifically
+ *   PI_POSTMAN_HANDLE — overrides AM_ME for this extension specifically
  */
 
 import type {
@@ -25,7 +25,7 @@ import { basename } from "node:path";
 // ──────────────────────────────────────────────────────────────────────────────
 
 function deriveHandle(cwd: string): string {
-  const explicit = process.env.PI_BRIDGE_HANDLE ?? process.env.AM_ME;
+  const explicit = process.env.PI_POSTMAN_HANDLE ?? process.env.AM_ME;
   if (explicit && /^[a-z0-9_-]+$/.test(explicit)) return explicit;
 
   // AMQ requires lowercase [a-z0-9_-]. Sanitize the cwd basename.
@@ -96,36 +96,36 @@ export default function (pi: ExtensionAPI) {
     const result = await runAmq(pi, ["who", "--json"]);
     if (result.notInstalled) {
       ctx.ui.notify(
-        `pi-bridge: amq not installed. Tools will return errors until installed.`,
+        `pi-postman: amq not installed. Tools will return errors until installed.`,
         "warning",
       );
-      ctx.ui.setStatus("pi-bridge", "amq missing");
+      ctx.ui.setStatus("pi-postman", "amq missing");
       return;
     }
     if (!result.ok) {
-      ctx.ui.notify(`pi-bridge: amq health check failed (${result.stderr.trim()})`, "warning");
-      ctx.ui.setStatus("pi-bridge", `bridge: ${handle} (degraded)`);
+      ctx.ui.notify(`pi-postman: amq health check failed (${result.stderr.trim()})`, "warning");
+      ctx.ui.setStatus("pi-postman", `postman: ${handle} (degraded)`);
       return;
     }
-    ctx.ui.setStatus("pi-bridge", `bridge: ${handle}`);
+    ctx.ui.setStatus("pi-postman", `postman: ${handle}`);
   });
 
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
     // AMQ has no per-session register/unregister — handles are passed per-command.
     // Just clear our footer status.
-    if (ctx.hasUI) ctx.ui.setStatus("pi-bridge", undefined);
+    if (ctx.hasUI) ctx.ui.setStatus("pi-postman", undefined);
   });
 
-  // ----- bridge_send -----
+  // ----- postman_send -----
   pi.registerTool({
-    name: "bridge_send",
-    label: "Bridge: Send",
+    name: "postman_send",
+    label: "Postman: Send",
     description:
       "Send a structured message to another agent session via AMQ. ALWAYS preview the message and ask for explicit user approval before calling this tool. Use for code-review handoffs, cross-session questions, decisions, blockers.",
     parameters: Type.Object({
       to: Type.String({
         description:
-          "Recipient handle (e.g. 'pi-author', 'codex'). Use bridge_sessions to discover available recipients.",
+          "Recipient handle (e.g. 'pi-author', 'codex'). Use postman_sessions to discover available recipients.",
       }),
       kind: Type.Union(
         [
@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 
       const result = await runAmq(pi, args);
       if (!result.ok) {
-        return toolError(`bridge_send failed: ${result.stderr.trim() || result.stdout.trim()}`);
+        return toolError(`postman_send failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       const summary = `Sent to ${params.to} (kind=${params.kind}${params.priority ? `, priority=${params.priority}` : ""})`;
       const detail = result.stdout.trim();
@@ -194,12 +194,12 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ----- bridge_inbox -----
+  // ----- postman_inbox -----
   pi.registerTool({
-    name: "bridge_inbox",
-    label: "Bridge: Inbox",
+    name: "postman_inbox",
+    label: "Postman: Inbox",
     description:
-      "List unread bridge messages for the current session. Only call when the user explicitly asks (e.g. 'check the bridge', 'any messages?'). Do NOT poll on every turn.",
+      "List unread postman messages for the current session. Only call when the user explicitly asks (e.g. 'check the inbox', 'any messages?'). Do NOT poll on every turn.",
     parameters: Type.Object({
       limit: Type.Optional(Type.Number({ description: "Max messages to return. Default: 20." })),
       from: Type.Optional(Type.String({ description: "Filter by sender handle." })),
@@ -223,7 +223,7 @@ export default function (pi: ExtensionAPI) {
 
       const result = await runAmq(pi, args);
       if (!result.ok) {
-        return toolError(`bridge_inbox failed: ${result.stderr.trim() || result.stdout.trim()}`);
+        return toolError(`postman_inbox failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       const stdout = result.stdout.trim();
       if (!stdout || stdout === "[]" || stdout === "null") {
@@ -257,20 +257,20 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ----- bridge_read -----
+  // ----- postman_read -----
   pi.registerTool({
-    name: "bridge_read",
-    label: "Bridge: Read",
+    name: "postman_read",
+    label: "Postman: Read",
     description:
-      "Read a specific bridge message by id. This moves the message from inbox/new to inbox/cur (it's now considered read). Use after bridge_inbox surfaces a message id.",
+      "Read a specific postman message by id. This moves the message from inbox/new to inbox/cur (it's now considered read). Use after postman_inbox surfaces a message id.",
     parameters: Type.Object({
-      id: Type.String({ description: "Message id (from bridge_inbox)." }),
+      id: Type.String({ description: "Message id (from postman_inbox)." }),
     }),
     async execute(_id, params) {
       const args = ["read", "--me", handle, "--id", params.id, "--json"];
       const result = await runAmq(pi, args);
       if (!result.ok) {
-        return toolError(`bridge_read failed: ${result.stderr.trim() || result.stdout.trim()}`);
+        return toolError(`postman_read failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       const stdout = result.stdout.trim();
       // Try to format the JSON; fall back to raw output.
@@ -303,12 +303,12 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ----- bridge_reply -----
+  // ----- postman_reply -----
   pi.registerTool({
-    name: "bridge_reply",
-    label: "Bridge: Reply",
+    name: "postman_reply",
+    label: "Postman: Reply",
     description:
-      "Reply to a previously received bridge message. Preserves thread continuity. ALWAYS preview the reply and ask for explicit user approval before calling this tool.",
+      "Reply to a previously received postman message. Preserves thread continuity. ALWAYS preview the reply and ask for explicit user approval before calling this tool.",
     parameters: Type.Object({
       id: Type.String({ description: "Message id to reply to." }),
       kind: Type.Union([
@@ -337,25 +337,25 @@ export default function (pi: ExtensionAPI) {
 
       const result = await runAmq(pi, args);
       if (!result.ok) {
-        return toolError(`bridge_reply failed: ${result.stderr.trim() || result.stdout.trim()}`);
+        return toolError(`postman_reply failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       const detail = result.stdout.trim();
       return toolOk(detail || `Replied to ${params.id} with kind=${params.kind}.`);
     },
   });
 
-  // ----- bridge_sessions -----
+  // ----- postman_sessions -----
   pi.registerTool({
-    name: "bridge_sessions",
-    label: "Bridge: Sessions",
+    name: "postman_sessions",
+    label: "Postman: Sessions",
     description:
-      "List active agent sessions known to AMQ on this machine. Call this before bridge_send to discover available recipient handles.",
+      "List active agent sessions known to AMQ on this machine. Call this before postman_send to discover available recipient handles.",
     parameters: Type.Object({}),
     async execute() {
       const result = await runAmq(pi, ["presence", "list", "--json"]);
       if (!result.ok) {
         return toolError(
-          `bridge_sessions failed: ${result.stderr.trim() || result.stdout.trim()}`,
+          `postman_sessions failed: ${result.stderr.trim() || result.stdout.trim()}`,
         );
       }
       const stdout = result.stdout.trim();
@@ -389,14 +389,14 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ----- bridge_thread -----
+  // ----- postman_thread -----
   pi.registerTool({
-    name: "bridge_thread",
-    label: "Bridge: Thread",
+    name: "postman_thread",
+    label: "Postman: Thread",
     description:
       "Show all messages in a thread. Useful when following a multi-turn handoff or cross-session decision.",
     parameters: Type.Object({
-      id: Type.String({ description: "Thread id (from bridge_inbox or bridge_read output)." }),
+      id: Type.String({ description: "Thread id (from postman_inbox or postman_read output)." }),
       limit: Type.Optional(Type.Number({ description: "Max messages. Default: 50." })),
       include_body: Type.Optional(
         Type.Boolean({ description: "Include message bodies. Default: true." }),
@@ -409,7 +409,7 @@ export default function (pi: ExtensionAPI) {
 
       const result = await runAmq(pi, args);
       if (!result.ok) {
-        return toolError(`bridge_thread failed: ${result.stderr.trim() || result.stdout.trim()}`);
+        return toolError(`postman_thread failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
       return toolOk(result.stdout.trim() || "(empty thread)");
     },

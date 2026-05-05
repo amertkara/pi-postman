@@ -1,17 +1,17 @@
 {
-  "name": "pi-bridge",
+  "name": "pi-postman",
   "version": "0.1.0",
-  "description": "Pi extension that bridges agent sessions via AMQ (Agent Message Queue)",
+  "description": "Pi extension that relays messages between agent sessions via AMQ (Agent Message Queue)",
   "type": "module",
   "license": "MIT",
   "author": "Mert Kara <mert.kara@hey.com>",
-  "homepage": "https://github.com/amertkara/pi-bridge",
+  "homepage": "https://github.com/amertkara/pi-postman",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/amertkara/pi-bridge.git"
+    "url": "git+https://github.com/amertkara/pi-postman.git"
   },
   "bugs": {
-    "url": "https://github.com/amertkara/pi-bridge/issues"
+    "url": "https://github.com/amertkara/pi-postman/issues"
   },
   "keywords": [
     "pi",
@@ -31,10 +31,10 @@
   ],
   "pi": {
     "extensions": [
-      "./extension/pi-bridge.ts"
+      "./extension/pi-postman.ts"
     ],
     "skills": [
-      "./skills/pi-bridge"
+      "./skills/pi-postman"
     ]
   },
   "scripts": {
