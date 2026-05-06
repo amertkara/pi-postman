@@ -37,7 +37,7 @@ Pi-postman skill activates:
    To:       pi-typ-osp-flags-author
    Kind:     review_handoff
    Priority: normal
-   Subject:  PR #656409 — 3 must-fix items
+   Subject:  PR #1234 — 3 must-fix items
    Body:
      1. Flag-gate divergence between code (BaseConfigurationSwaps.enabled?) and PR body
         (merchant_rollouts?). redirect_service.rb:467
@@ -56,7 +56,7 @@ Pi-postman skill activates:
      To:       pi-typ-osp-flags-author
      Kind:     review_handoff
      Priority: normal
-     Subject:  PR #656409 — 3 must-fix items
+     Subject:  PR #1234 — 3 must-fix items
      Body:
        [as above]
 
@@ -72,7 +72,7 @@ A terminal notification appears (via `amq wake`):
 ```
 📬 pi-postman: New message from pi-typ-osp-flags-review
    Kind: review_handoff · Priority: normal
-   Subject: PR #656409 — 3 must-fix items
+   Subject: PR #1234 — 3 must-fix items
 ```
 
 You switch to tab B.

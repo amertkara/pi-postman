@@ -10,7 +10,7 @@ The canonical example. Tab A is doing a review; tab B was the author.
 
 **Tab A (review):**
 
-User: *"I'm done with the review of PR #662657. Hand off the must-fix items to the author session."*
+User: *"I'm done with the review of PR #1234. Hand off the must-fix items to the author session."*
 
 Pi:
 1. `postman_sessions()` → finds `pi-author` (or whatever tab B's handle is).
@@ -21,7 +21,7 @@ Pi:
    To:       pi-author
    Kind:     review_handoff
    Priority: normal
-   Subject:  PR #662657 — 3 must-fix items
+   Subject:  PR #1234 — 3 must-fix items
    Body:
      1. def perform(shop_id:, changeset_id:) diverges from sibling pattern (kwargs-vs-params)
      2. not_nil! on rollout_treatment silently strands rollout
