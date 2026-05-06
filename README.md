@@ -53,24 +53,27 @@ brew install avivsinai/tap/amq        # macOS
 curl -fsSL https://raw.githubusercontent.com/avivsinai/agent-message-queue/main/scripts/install.sh | bash
 ```
 
-Verify:
+Verify with `amq --version`.
+
+### 2. Install pi-postman
 
 ```bash
-amq --version
+npm install -g pi-postman
 ```
 
-### 2. Clone and build pi-postman
+This gives you the `pi-postman` CLI, the bundled extension TypeScript, and the skill directory.
+
+### 3. Install the skill
+
+The skill teaches Pi *when* and *how* to use the postman tools. One command:
 
 ```bash
-git clone git@github.com:amertkara/pi-postman.git ~/src/github.com/amertkara/pi-postman
-cd ~/src/github.com/amertkara/pi-postman
-pnpm install
-pnpm typecheck
+pi-postman install-skill
 ```
 
-The extension is plain TypeScript loaded directly by Pi via `--experimental-strip-types`; no build step needed.
+This symlinks the bundled skill into `~/.pi/agent/skills/pi-postman/`. Pi will auto-discover it on next launch. Reverse with `pi-postman uninstall-skill` if you ever want to.
 
-### 3. Initialize the maildir
+### 4. Initialize the maildir
 
 `amq` resolves its root via `.amqrc` (per-project), `AMQ_GLOBAL_ROOT`, or `~/.agent-mail` as the fallback. Easiest path:
 
@@ -81,26 +84,39 @@ amq coop init
 
 This creates `~/.agent-mail/` and the per-handle directories on first send.
 
-### 4. Wire into Pi
+### 5. Wire the extension into Pi
 
-Pass the extension path to `pi`. You can do this per-session or in your shell config.
+The `pi-postman extension-path` subcommand prints the absolute path you need:
 
-**Per-session (simplest):**
+**Per-session:**
 
 ```bash
-AM_ME=pi-foo pi --extension /Users/you/src/github.com/amertkara/pi-postman/extension/pi-postman.ts
+AM_ME=pi-foo pi --extension "$(pi-postman extension-path)"
 ```
 
 **Permanent (every Pi session):**
 
 ```bash
 # In ~/.zshrc or ~/.bashrc
-alias pi='pi --extension /Users/you/src/github.com/amertkara/pi-postman/extension/pi-postman.ts'
+alias pi='pi --extension "$(pi-postman extension-path)"'
 ```
 
-Or symlink the extension into your global Pi extensions directory if your Pi version supports auto-loading.
-
 When the extension loads, the footer shows `postman: <handle>`.
+
+### Develop locally instead
+
+If you want to hack on pi-postman:
+
+```bash
+git clone git@github.com:amertkara/pi-postman.git ~/src/github.com/amertkara/pi-postman
+cd ~/src/github.com/amertkara/pi-postman
+pnpm install
+pnpm typecheck
+ln -sf "$PWD/skills/pi-postman" ~/.pi/agent/skills/pi-postman
+pi --extension "$PWD/extension/pi-postman.ts"
+```
+
+The extension is plain TypeScript loaded directly by Pi via `--experimental-strip-types`; no build step needed.
 
 ## Quickstart: two-tab walkthrough
 

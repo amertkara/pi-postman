@@ -1,6 +1,6 @@
 {
   "name": "pi-postman",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension that relays messages between agent sessions via AMQ (Agent Message Queue)",
   "type": "module",
   "license": "MIT",
@@ -24,12 +24,16 @@
     "codex"
   ],
   "files": [
+    "bin/**",
     "extension/**",
     "skills/**",
     "assets/**",
     "README.md",
     "LICENSE"
   ],
+  "bin": {
+    "pi-postman": "./bin/pi-postman.mjs"
+  },
   "pi": {
     "extensions": [
       "./extension/pi-postman.ts"
