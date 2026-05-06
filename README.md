@@ -58,10 +58,15 @@ Verify with `amq --version`.
 ### 2. Install pi-postman
 
 ```bash
-npm install -g pi-postman
+# Pick the package manager you have on $PATH:
+npm  install -g pi-postman          # npm 11+
+pnpm add     -g pi-postman          # pnpm
+yarn global add pi-postman          # yarn
 ```
 
 This gives you the `pi-postman` CLI, the bundled extension TypeScript, and the skill directory.
+
+> If pnpm refuses with `ERR_PNPM_NO_MATURE_MATCHING_VERSION` (it has a default release-age cooldown), pass `--config.minimumReleaseAge=0` for the install.
 
 ### 3. Install the skill
 
@@ -102,6 +107,15 @@ alias pi='pi --extension "$(pi-postman extension-path)"'
 ```
 
 When the extension loads, the footer shows `postman: <handle>`.
+
+### Updating
+
+```bash
+npm  install -g pi-postman@latest
+pnpm add     -g pi-postman@latest --config.minimumReleaseAge=0
+```
+
+The skill symlink resolves through the package manager's store path, so it picks up the new version automatically. No need to re-run `install-skill` unless the symlink target was changed.
 
 ### Develop locally instead
 
