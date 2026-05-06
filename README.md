@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="pi-postman logo" width="160" height="160" />
+</p>
+
 # pi-postman
 
 A Pi extension that lets Pi sessions on the same machine talk to each other (and to Claude Code, Codex, or any other agent that speaks the same queue) without copy-paste, without shared context, and without a daemon.
