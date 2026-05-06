@@ -4,7 +4,7 @@
   "description": "Pi extension that relays messages between agent sessions via AMQ (Agent Message Queue)",
   "type": "module",
   "license": "MIT",
-  "author": "Mert Kara <mert.kara@hey.com>",
+  "author": "Mert Kara <amertkara@gmail.com>",
   "homepage": "https://github.com/amertkara/pi-postman",
   "repository": {
     "type": "git",

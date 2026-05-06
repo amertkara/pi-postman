@@ -4,16 +4,16 @@ A walkthrough of the canonical pi-postman flow.
 
 ## Setup
 
-You have two Pi tabs open in iTerm. Both are attached to the same Shopify world worktree (or two worktrees in the same repo).
+You have two Pi tabs open in iTerm. Both are attached to the same project (or two worktrees in the same repo).
 
 ```bash
 # Tab A: review session, opened in the worktree
-$ cd ~/world/trees/typ-osp-flags/src
+$ cd ~/projects/my-app
 $ pi
 # Pi-postman registers this session as `pi-typ-osp-flags-review` (or similar)
 
 # Tab B: author session, also in the worktree (or a sibling worktree)
-$ cd ~/world/trees/typ-osp-flags/src
+$ cd ~/projects/my-app
 $ pi
 # Registers as `pi-typ-osp-flags-author`
 ```
